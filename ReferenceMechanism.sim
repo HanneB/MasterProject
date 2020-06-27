@@ -1,0 +1,235 @@
+begin
+	external class demos="/Users/HanneBruleite/MasterSIM/Ny/demos.atr";
+	demos begin
+	   REF(RDist) waitToSendN, waitToSend,AttackerWTS, switchTime, transmissionTime;
+	   REF(Tally) totalPacketDelay, waitInQueue1, waitInQueue2, PG1Wait, PGWait, PGWaitQ1, PGWaitQ2, PG1WaitQ1, PG1WaitQ2;
+	   REF(bdist) notCaught;
+	   REF(res) capacitySwitch, outLink;
+	   REF(condq) SchedulerQ, TransmittQ;
+	   REF(waitq) InQ1, InQ2;
+	   REF(BIN) finishedPackets, finishedLegitPackets, GenAttackerPkg, AFP, GenNormalPkg, DroppedPkg,AFinished, LFinished, fullBuf, PGFinished;
+	   REF(randint) inPort, newPack, pick;
+	   REF(Packet) P;
+	   REF(queue) OutQ1;
+	   !BOOLEAN linkAvailable;
+	   INTEGER a,outQ, inputPort,inputPort2, pickFrom, inputPortA, input, Q1, Q2,typePack, typePort;
+	   INTEGER BufInQ1 = 10000000;
+	   INTEGER BufInQ2 = 10000000;
+
+
+Entity CLASS Packet(signature);
+text signature;
+BEGIN
+	LONG REAL timestamp;
+	timestamp := time;
+		BEGIN
+			SchedulerQ.signal;
+			IF (signature = "PG") THEN
+				BEGIN
+			    	IF (inputPort = 1) THEN 
+					BEGIN
+						If (InQ1.length < BufInQ1) THEN
+  						BEGIN
+							Q1 := Q1+1;
+							InQ1.wait;
+						END ELSE fullBuf.give(1);
+					END ELSE IF (inputPort = 2) THEN
+					BEGIN
+					IF (InQ2.length < BufInQ2) THEN
+   						BEGIN
+							Q2 := Q2+1;
+							InQ2.wait;
+						END ELSE fullBuf.give(1);
+					END;
+				END ELSE IF (signature = "PG1") THEN
+				BEGIN
+			    	IF (inputPort2 = 1) THEN 
+					BEGIN
+						If (InQ1.length < BufInQ1) THEN
+  						BEGIN
+							InQ1.wait;
+						END ELSE fullBuf.give(1);
+					END ELSE if (inputPort2 = 2) THEN
+					BEGIN
+						IF (InQ2.length < BufInQ2) THEN
+   						BEGIN
+						InQ2.wait;
+						END ELSE fullBuf.give(1);
+					END;
+				END ELSE IF (signature = "At") THEN 
+				BEGIN
+					IF (inputPortA = 1) THEN 
+						BEGIN
+							If (InQ1.length < BufInQ1) THEN
+  							BEGIN
+								InQ1.wait;
+							END;
+						END ELSE IF (inputPortA = 2) THEN
+						BEGIN
+							IF (InQ2.length < BufInQ2) THEN
+   							BEGIN
+								InQ2.wait;
+							END;
+						END;
+				END ELSE DroppedPkg.give(1); 
+		END;
+END;
+
+
+	ENTITY CLASS PacketGenerator;
+	BEGIN
+LOOP:	
+		
+		GenNormalPkg.give(1);
+		inputPort := inPort.sample;
+		new Packet(edit("Packet",inputPort), "PG").schedule(now);
+		hold(waitToSend.sample);
+		repeat;
+	END;
+
+	ENTITY CLASS PacketGeneratorNormal;
+	BEGIN
+LOOP:	
+		
+		GenNormalPkg.give(1);
+		inputPort2 := inPort.sample;
+		new Packet(edit("Packet",inputPort2), "PG1").schedule(now);
+		hold(waitToSendN.sample);
+		repeat;
+	END;
+
+	ENTITY CLASS Scheduler; 
+	BEGIN
+	REF(Packet) P,P1,P2;
+LOOP:	
+	SchedulerQ.waituntil(InQ1.length > 0 or InQ2.length > 0);
+	BEGIN
+	IF((InQ1.length > 0 and InQ2.length = 0)) THEN 
+				BEGIN
+					P :- InQ1.coopt;
+					waitInQueue1.update(time-P.timestamp);
+
+				END ELSE IF (InQ1.length  = 0 and InQ2.length  > 0) THEN
+				BEGIN 
+					P :- InQ2.coopt;
+					waitInQueue2.update(time-P.timestamp);
+				END ELSE IF (InQ1.length > 0 and InQ2.length  > 0 ) THEN
+
+				BEGIN
+					pickFrom := pick.sample;
+					if (pickFrom = 1) THEN 
+					BEGIN
+						P :- InQ1.coopt;
+						waitInQueue1.update(time-P.timestamp);
+					END ELSE if (pickFrom = 2) THEN
+					BEGIN
+						P :- InQ2.coopt;
+						waitInQueue2.update(time-P.timestamp);
+					END;
+				END;
+
+
+			capacitySwitch.acquire(1);
+			!Hold(switchTime.sample);
+			capacitySwitch.release(1);
+			outLink.acquire(1);
+			Hold(transmissionTime.sample);
+			outLink.release(1);
+			IF (P.signature = "PG" or P.signature = "PG1") THEN
+			BEGIN
+				LFinished.give(1);
+				IF (P.signature = "PG") THEN 
+				BEGIN
+					PGWait.update(time - P.timestamp);
+					PGFinished.give(1);
+					IF (inputPort = 1) THEN
+					BEGIN
+						PGWaitQ1.update(time - P.timestamp);
+					END ELSE PGWaitQ2.update(time - P.timestamp);
+				END ELSE IF (P.signature = "PG1") THEN
+				BEGIN
+					PG1Wait.update(time - P.timestamp);
+					IF (inputPort2 = 1) THEN
+					BEGIN
+						PG1WaitQ1.update(time - P.timestamp);
+					END ELSE PG1WaitQ2.update(time - P.timestamp);
+				END;
+
+			END ELSE AFinished.give(1);
+		
+			finishedPackets.give(1);
+			totalPacketDelay.update(time - P.timestamp); 
+			repeat;
+		END;
+	END;
+
+
+	ENTITY CLASS Attacker;
+	BEGIN
+LOOP:
+			GenAttackerPkg.give(1);
+			inputPortA := inPort.sample;
+			new Packet(edit("Packet",inputPortA), "At").schedule(now);
+			hold(AttackerWTS.sample);
+			repeat;
+	END;
+
+
+	BEGIN
+	INTEGER seed = 20;
+		!trace;  
+		capacitySwitch :- NEW Res("capSwitch", 1);
+		outLink :- NEW Res("outLink", 1);
+		finishedPackets :- NEW BIN("finishedPkgs", 0);
+		finishedLegitPackets :- NEW BIN("finishedLegitPackets", 0);
+		GenAttackerPkg :- NEW BIN("GenAttackerPkg", 0);
+		GenNormalPkg :- NEW BIN("GenNormalPkg", 0);
+		AFP :- NEW BIN("AFP", 0);
+		DroppedPkg :- NEW BIN("DroppedPkg",0);
+		LFinished :- NEW BIN("LFinished",0);
+		AFinished :- NEW BIN("AFinished",0);
+		fullBuf :- NEW BIN("fullBuf",0);
+		PGFinished :- NEW BIN("PGFinished",0);
+
+		inPort :- NEW randint("inPort", 1, 2);
+		pick :- NEW randint("pick", 1, 2);
+		totalPacketDelay :- NEW Tally("E2E_Delay");
+		!notCaught :- NEW Draw("notCaught", 0.5); 
+
+		waitInQueue1 :- NEW Tally("DelayQueue1");
+		waitInQueue2 :- NEW Tally("DelayQueue2");
+		PGWait :- NEW Tally("PGWaitTot");
+		PG1Wait :- NEW Tally("PG1WaitTot");
+		PGWaitQ1 :- NEW Tally("PGWaitQ1");
+		PGWaitQ2 :- NEW Tally("PGWaitQ2");
+		PG1WaitQ1 :- NEW Tally("PG1WaitQ1");
+		PG1WaitQ2 :- NEW Tally("PG1WaitQ2");
+
+
+		waitToSend :- new NegExp("waitToSend", 0.05);
+		waitToSendN :- new NegExp("waitToSendN", 0.02);
+		AttackerWTS:- new NegExp("A_waitToSend", 0.69);
+		transmissionTime :- NEW NegExp("transmissionTime", 0.8);
+		!switchTime:- NEW Constant("switchTime", 0.15);
+
+		SchedulerQ :- new condq("SchedulerQ");
+		InQ1 :- new waitq("InQ1");
+		InQ2 :- new waitq("InQ2");
+
+		waitToSend.u:= seed;
+		waitToSendN.u:= seed;
+		AttackerWTS.u:= seed;
+		inPort.u:= seed;
+		
+
+		new PacketGenerator("PG").schedule(0);
+		new PacketGeneratorNormal("PGN").schedule(0);
+		new Attacker("A").schedule(0);
+		new Scheduler("S").schedule(0);
+		!finishedPackets.take(100000);
+		!LFinished.take(100000);
+		PGFinished.take(100000);
+	END;
+
+	END;
+END;
